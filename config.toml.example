@@ -1,0 +1,91 @@
+# Gateway + updater config. Bind-mounted into both containers at
+# /etc/exo/config.toml.
+#
+# Copy this file to `config.toml`, then edit every line marked TODO
+# before bringing the stack up.
+
+[server]
+addr = ":8000"
+# Public origin where Caddy terminates TLS and serves the UI. Must
+# match the host the Caddyfile responds to.
+# TODO: replace example.com with the public domain. No domain of
+# your own? Use `<dashed-public-ip>.nip.io` (e.g.
+# `https://203-0-113-45.nip.io`) - nip.io resolves any dashed-IP
+# subdomain to that IP, and Let's Encrypt issues against it.
+ui_origin = "https://example.com"
+
+[database]
+mongo_uri = "mongodb://database:27017/?replicaSet=rs0&directConnection=true"
+mongo_database = "exo"
+
+[auth]
+# JWT signing secret for session tokens. Rotating this invalidates
+# every active session.
+# TODO: generate a long random value, e.g. `openssl rand -base64 64`.
+jwt_secret = "REPLACE-WITH-LONG-RANDOM-SECRET"
+issuer = "exo-api"
+audience = "exo-ui"
+access_token_ttl = "1m"
+refresh_token_ttl = "168h"
+
+[artifacts]
+root_dir = "/var/lib/exo/artifacts"
+
+[runners]
+heartbeat_timeout = "30s"
+poll_interval = "5s"
+cert_ttl = "1h"
+cert_renew_before = "15m"
+# CIDR allowlist for the unauthenticated POST /api/v1/runners/enroll
+# endpoint. The in-stack workers live on 172.28.0.0/24; the rest of
+# RFC1918 is included so runners on a peered network can also
+# enroll. Tighten if no off-host runners are expected.
+enrollment_allowed_networks = ["127.0.0.1/32", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+enrollment_rate_per_ip_per_minute = 6
+
+[proxy]
+public_url = "https://credential-proxy"
+internal_base_url = "https://credential-proxy:8444"
+internal_ca_path = "/var/lib/exo/tls/service-ca.crt"
+tls_dev_dir = "/var/lib/exo/tls"
+service_ca_cert_path = "/var/lib/exo/tls/service-ca.crt"
+gateway_cert_dir = "/var/lib/exo/tls"
+per_run_burst          = 100
+per_run_refill_per_sec = 20
+
+# OAuth callback target. Must match ui_origin above.
+# TODO: use the same value you set for ui_origin (e.g.
+# `https://203-0-113-45.nip.io`).
+callback_base_url = "https://example.com"
+
+[updater]
+listen_addr = ":8080"
+poll_interval = "10m"
+env_file_path = "/opt/exo/.env"
+compose_file_path = "/opt/exo/docker-compose.yml"
+
+# Docker Hub polling backend.
+registry_type = "oci"
+
+# Services the updater recreates during an in-place upgrade. Don't
+# add `exo-updater` to this list; the updater can't recreate the
+# container it's running inside.
+managed_services = ["gateway", "credential-proxy", "worker", "ui-extract"]
+cert_dir = "/var/lib/exo/tls"
+cert_ttl = "1h"
+cert_renew_before = "15m"
+
+[updater.oci]
+registry = "registry-1.docker.io"
+namespace = "ghostsecurityhq"
+repository = "exo-worker"
+auth_username = "ghostsecurityhq"
+# auth_token is read from the EXO_UPDATER_OCI_AUTH_TOKEN env var.
+
+# Initial admin user. Created once on first boot (when the users
+# collection is empty). Subsequent password rotations through the
+# UI persist; this block becomes a no-op on later starts.
+# TODO: replace email + password before the first `docker compose up`.
+[[seed.users]]
+email = "admin@example.com"
+password = "changeme"

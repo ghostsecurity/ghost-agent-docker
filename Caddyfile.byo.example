@@ -1,0 +1,50 @@
+# Caddy config - bring-your-own TLS certificate.
+#
+# Use this flavor when:
+#   - The public domain is not internet-resolvable (private DNS,
+#     internal-only, air-gapped)
+#   - Port 80 or 443 is not reachable from the internet
+#   - An existing corporate or internal CA issues the cert
+#
+# Prereqs before bringing the stack up:
+#   1. Place the cert and private key on the host under `./certs/`:
+#        ./certs/fullchain.pem   - cert + intermediate chain
+#        ./certs/privkey.pem     - private key (mode 600 recommended)
+#   2. Copy this file to `Caddyfile` and edit the TODO below.
+#   3. Renewal is the operator's responsibility - swap the files in
+#      place and `docker compose restart caddy` to pick them up.
+
+# TODO: replace example.com with the public hostname the cert was
+# issued for. Must match `ui_origin` and `callback_base_url` in
+# config.toml.
+example.com {
+    encode gzip zstd
+
+    # Operator-supplied cert + key, bind-mounted via the `./certs`
+    # volume in docker-compose.yml.
+    tls /etc/caddy/certs/fullchain.pem /etc/caddy/certs/privkey.pem
+
+    # API + health endpoints. The gateway terminates its own TLS
+    # with a self-signed cert on the docker bridge; the connection
+    # never leaves the host, and the gateway cert's SAN is bound to
+    # the bridge hostname `gateway` (no public CA could issue for it
+    # anyway), so skipping verification is safe here.
+    @api path /api/* /healthz
+    handle @api {
+        reverse_proxy https://gateway:8000 {
+            transport http {
+                tls
+                tls_insecure_skip_verify
+            }
+        }
+    }
+
+    # Static SPA. try_files {path} /index.html is the SPA fallback
+    # so deep-link hard refreshes serve index.html and client-side
+    # routing takes over.
+    handle {
+        root * /srv/ui
+        try_files {path} /index.html
+        file_server
+    }
+}
