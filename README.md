@@ -140,18 +140,14 @@ docker compose up -d
 | Run behind an existing reverse proxy | Keep Caddy in the stack (it serves the static UI bundle as well as proxying the API). Switch its Caddyfile to plain HTTP on a different host port, then point your external proxy at that port |
 | Use named volumes on a specific disk | Override the volume definitions at the bottom of `docker-compose.yml` with `driver_opts` pointing at the desired filesystem |
 | Switch the registry | `REGISTRY` in `.env` (must mirror the `ghostsecurityhq/exo-*` layout) |
+| Cap container log size + auto-prune old images | Optional final step in `setup.sh`. Caps each container's logs at 10MB x 3 rotation (`json-file` driver), installs a daily systemd timer running `docker image prune -a --filter until=168h`. Answer 'n' at the prompt to skip |
 
 ## Logs
 
 ```bash
-docker compose logs -f gateway
-docker compose logs -f credential-proxy
-docker compose logs -f exo-updater
-```
-
-Worker logs are noisier (one stream per replica):
-
-```bash
+docker compose logs -f --tail=100 gateway
+docker compose logs -f --tail=100 credential-proxy
+docker compose logs -f --tail=100 exo-updater
 docker compose logs -f --tail=100 worker
 ```
 
@@ -164,4 +160,4 @@ docker compose down -v         # also delete volumes (DESTRUCTIVE)
 
 `down -v` removes the MongoDB data volume, Caddy's cert state, the
 credential proxy's CA material, and all runner identities. Treat it
-like dropping a database - everything has to be reseeded after.
+like dropping a database - everything has to be reseeded/recreated after.

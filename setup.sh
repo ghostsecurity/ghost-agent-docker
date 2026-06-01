@@ -161,6 +161,95 @@ if [ "$BYO_NOTICE" = "1" ]; then
   echo
   echo "${Y}BYO-cert: place fullchain.pem and privkey.pem in ./certs/ before starting.${N}"
 fi
+
+# --- host tuning (optional) ---
+
+echo
+echo "${B}Host tuning${N} (optional, modifies system files - needs root/sudo):"
+echo "  - Cap container log size at 10MB x 3 files (json-file driver)"
+echo "  - Daily prune of unused images older than 7 days"
+echo
+read -r -p "Apply? [Y/n]: " TUNE_CHOICE
+
+case "${TUNE_CHOICE:-Y}" in
+  [nN]|[nN][oO])
+    echo "Skipping host tuning."
+    ;;
+  *)
+    # Pick the privilege escalator. Skip with a notice if we're not
+    # root AND sudo isn't installed.
+    if [ "$(id -u)" -eq 0 ]; then
+      SUDO=""
+    elif command -v sudo >/dev/null 2>&1; then
+      SUDO="sudo"
+    else
+      echo "${Y}note:${N} need root or sudo to apply host tuning - skipping"
+      TUNE_SKIPPED=1
+    fi
+
+    DOCKER_BIN=$(command -v docker || echo /usr/bin/docker)
+
+    if [ -z "${TUNE_SKIPPED:-}" ]; then
+      # Docker daemon log rotation. Refuse to overwrite an existing
+      # daemon.json - operators may have other config there. The
+      # warning tells them what to add manually.
+      if [ -f /etc/docker/daemon.json ]; then
+        echo "${Y}note:${N} /etc/docker/daemon.json already exists - skipping log rotation."
+        echo "  To enable manually, add:"
+        echo '    "log-driver": "json-file",'
+        echo '    "log-opts": { "max-size": "10m", "max-file": "3" }'
+      else
+        $SUDO mkdir -p /etc/docker
+        $SUDO tee /etc/docker/daemon.json > /dev/null <<'EOF'
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+EOF
+        # Restart docker so the new log driver picks up. Safe here
+        # because the stack hasn't been brought up yet (setup.sh
+        # runs before `docker compose up`).
+        $SUDO systemctl restart docker
+        echo "  wrote /etc/docker/daemon.json and restarted docker"
+      fi
+
+      # Systemd timer for daily image prune. Idempotent - re-writing
+      # the same content on a re-run is fine.
+      $SUDO tee /etc/systemd/system/exo-docker-prune.service > /dev/null <<EOF
+[Unit]
+Description=Prune unused Docker images older than 7 days
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=${DOCKER_BIN} image prune -a --filter "until=168h" -f
+EOF
+
+      $SUDO tee /etc/systemd/system/exo-docker-prune.timer > /dev/null <<'EOF'
+[Unit]
+Description=Daily Docker image prune
+
+[Timer]
+OnCalendar=daily
+# Persistent=true catches up missed runs (host was off, etc.) on
+# next boot instead of waiting another 24h.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+      $SUDO systemctl daemon-reload
+      $SUDO systemctl enable --now exo-docker-prune.timer >/dev/null 2>&1
+      echo "  installed exo-docker-prune.timer (daily image prune)"
+    fi
+    ;;
+esac
+
 echo
 echo "Next:"
 echo "  docker login -u ghostsecurityhq    # if you haven't already"
