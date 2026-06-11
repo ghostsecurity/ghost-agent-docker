@@ -46,13 +46,30 @@ for tool in openssl sed curl; do
   command -v "$tool" >/dev/null 2>&1 || { echo "${R}error:${N} '$tool' not found in PATH"; exit 1; }
 done
 
+# Docker (with the compose v2 plugin) is a hard requirement: the stack runs
+# as `docker compose`, and the host-tuning below restarts docker.service.
+# Fail fast with a clear message rather than aborting cryptically later.
+if ! command -v docker >/dev/null 2>&1; then
+  echo "${R}error:${N} docker not found. Install Docker Engine + the compose plugin first:"
+  echo "  https://docs.docker.com/engine/install/"
+  exit 1
+fi
+if ! docker info >/dev/null 2>&1; then
+  echo "${R}error:${N} the docker daemon isn't reachable - is it running, and are you root or in the 'docker' group?"
+  exit 1
+fi
+if ! docker compose version >/dev/null 2>&1; then
+  echo "${R}error:${N} 'docker compose' (v2 plugin) not found. Install docker-compose-plugin (or docker-compose-v2)."
+  exit 1
+fi
+
 # --- prompts ---
 
 echo "${B}Ghost Agent Platform - setup${N}"
 echo
 
 # Release tag
-read -r -p "Release tag to deploy (e.g. v0.0.19): " TAG
+read -r -p "Release tag to deploy (e.g. v0.0.27): " TAG
 [ -z "$TAG" ] && { echo "${R}error:${N} TAG is required"; exit 1; }
 
 # Public domain - detect IP and offer nip.io as the default
@@ -110,17 +127,20 @@ JWT_SECRET=$(openssl rand -base64 64 | tr -d '\n')
 sed \
   -e "s|^TAG=$|TAG=${TAG}|" \
   -e "s|^ENCRYPTION_KEY=$|ENCRYPTION_KEY=${ENCRYPTION_KEY}|" \
+  -e "s|^EXO_JWT_SECRET=$|EXO_JWT_SECRET=${JWT_SECRET}|" \
+  -e "s|^EXO_SEED_ADMIN_PASSWORD=$|EXO_SEED_ADMIN_PASSWORD=${ADMIN_PASSWORD}|" \
   -e "s|^EXO_UPDATER_OCI_AUTH_TOKEN=$|EXO_UPDATER_OCI_AUTH_TOKEN=${DOCKER_OAT}|" \
   .env.example > .env
 
-# config.toml: substitute domain (URL form only), jwt_secret, seed
-# admin email + password. The TODO comments in the example file are
-# left intact - harmless reference for anyone editing later.
+# config.toml: substitute domain (URL form only) + seed admin email.
+# jwt_secret and the admin password are NOT written here — they go into
+# .env (above) as EXO_JWT_SECRET / EXO_SEED_ADMIN_PASSWORD so config.toml
+# carries no secrets and can be world-readable for the non-root gateway.
+# The TODO comments in the example file are left intact - harmless
+# reference for anyone editing later.
 sed \
   -e "s|https://example.com|https://${DOMAIN}|g" \
-  -e "s|REPLACE-WITH-LONG-RANDOM-SECRET|${JWT_SECRET}|" \
   -e "s|email = \"admin@example.com\"|email = \"${ADMIN_EMAIL}\"|" \
-  -e "s|password = \"changeme\"|password = \"${ADMIN_PASSWORD}\"|" \
   config.toml.example > config.toml
 
 # config.proxy.toml: no operator inputs - just copy.
@@ -144,7 +164,12 @@ case "$TLS_CHOICE" in
     ;;
 esac
 
-chmod 600 .env config.toml   # contain secrets
+chmod 600 .env   # holds secrets: encryption key, jwt secret, admin pw, OAT
+# config.toml and config.proxy.toml carry no secrets (the gateway's come
+# from .env) and are bind-mounted read-only into the non-root gateway /
+# credential-proxy (UID 65532); keep them world-readable so the containers
+# can read them regardless of the operator's umask.
+chmod 644 config.toml config.proxy.toml
 
 # --- summary ---
 
