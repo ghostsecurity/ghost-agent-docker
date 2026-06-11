@@ -24,16 +24,7 @@
 
 # Pin the compose project name so host invocations (`docker compose` from
 # whatever directory the operator cloned into) AND the in-stack updater's
-# invocations resolve to the SAME project. The updater bind-mounts this
-# directory at /opt/exo and runs `docker compose -f /opt/exo/docker-compose.yml`,
-# so without a pin it derives the project name "exo" while the host derives
-# it from the deploy directory (e.g. "ghost-agent-docker"). That mismatch
-# makes the updater's per-run worker recycle try to *create* the fixed-subnet
-# `internal` network under its own project name, which collides with the
-# host's already-running network ("Pool overlaps with other one on this
-# address space") and the recreate fails — leaving fewer workers than
-# WORKER_REPLICAS. Pinning to "exo" (what the updater's /opt/exo path yields)
-# makes both sides agree so the recycle reuses the existing network.
+# invocations resolve to the SAME project.
 name: exo
 
 services:
@@ -246,7 +237,7 @@ services:
     # privileged container) — so running the process as non-root buys no
     # real isolation while complicating the in-container `docker login` and
     # the .env rewrite inside the bind-mounted /opt/exo. Run it as root
-    # explicitly; the non-root image default still satisfies Scout's policy.
+    # explicitly.
     user: "0:0"
     command:
       - |
@@ -358,31 +349,31 @@ networks:
 
 volumes:
   # MongoDB data directory.
-  mongo-data:
-  # Run artifacts (logs, outputs).
-  artifacts:
-  # Private TLS material: ca.{crt,key}, server.{crt,key},
+  mongo-data: # Run artifacts (logs, outputs).
+
+  artifacts: # Private TLS material: ca.{crt,key}, server.{crt,key},
+
   # service-ca.{crt,key}, updater.{crt,key}. Mounted by the
   # credential-proxy (which generates it on first boot), the
   # gateway (reads server.* and service-ca.crt), and the updater
   # (reads its own cert pair). NEVER mounted by the worker - no
   # private key should ever reach a workload container.
-  tls:
-  # Public CAs only: the credential-proxy publishes ca.crt and
+  tls: # Public CAs only: the credential-proxy publishes ca.crt and
+
   # service-ca.crt here on startup so downstream services can
   # trust the cert chain without read access to the signing keys.
   # Mounted read-only by the worker.
-  tls-public:
-  # Runner identity pool (one subdir per runner_id, each gated by
+  tls-public: # Runner identity pool (one subdir per runner_id, each gated by
+
   # its own advisory flock). Shared across scaled worker replicas
   # - the lock discipline guarantees two workers never use the
   # same identity concurrently.
-  runner-identity:
-  # Caddy state - Let's Encrypt account + issued cert material
+  runner-identity: # Caddy state - Let's Encrypt account + issued cert material
+
   # persists here across restarts so LE doesn't re-issue on every
   # boot. Unused on the BYO-cert path.
   caddy-data:
-  caddy-config:
-  # Static UI bundle, populated by the ui-extract oneshot and
+  caddy-config: # Static UI bundle, populated by the ui-extract oneshot and
+
   # served by Caddy.
   caddy-ui:
