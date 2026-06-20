@@ -68,13 +68,27 @@ compose_file_path = "/opt/exo/docker-compose.yml"
 # Docker Hub polling backend.
 registry_type = "oci"
 
-# Services the updater recreates during an in-place upgrade. Don't
-# add `exo-updater` to this list; the updater can't recreate the
-# container it's running inside.
-managed_services = ["gateway", "credential-proxy", "worker", "ui-extract"]
 cert_dir = "/var/lib/exo/tls"
 cert_ttl = "1h"
 cert_renew_before = "15m"
+
+# Stack delivery (topology-aware upgrades). The compose file is not
+# shipped in this repo; it is published per release as the cosign-
+# signable OCI artifact `${REGISTRY}/exo-stack:<tag>` and fetched both
+# at bootstrap (by setup.sh) and on every upgrade (by the updater),
+# which then converges the topology — so a release can add / remove /
+# reconfigure containers, not just bump image tags.
+stack_repository = "exo-stack"
+# The updater's own compose service name, excluded from the converge so
+# the upgrade doesn't recreate the container running it.
+self_service = "exo-updater"
+# Fallback registry host for the bundle ref when `.env` doesn't set
+# REGISTRY (the compose interpolates `${REGISTRY:-docker.io/ghostsecurityhq}`,
+# so REGISTRY is usually absent from .env). Matches that default.
+stack_registry = "docker.io/ghostsecurityhq"
+# No stack_signing_* policy here: Docker Hub images/bundles are not
+# cosign-signed, so the bundle is pulled unverified (the updater logs a
+# warning). The trust level matches the unsigned images it ships beside.
 
 [updater.oci]
 registry = "registry-1.docker.io"

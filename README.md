@@ -11,16 +11,25 @@ a single host.
 A working install from a stock Ubuntu image (no Docker preinstalled):
 
 - **VM**: 4 GB / 2 Intel vCPUs / 120 GB / Ubuntu 24.04 (LTS) x64
-- **Install path**: `/opt/ghost-agent-docker`
+- **Install path**: `/opt/exo` (required — see note below)
 
 Bootstrap once:
 
 ```bash
 apt-get update
 apt-get install -y docker.io docker-compose-v2
-git clone https://github.com/ghostsecurity/ghost-agent-docker.git /opt/ghost-agent-docker
-cd /opt/ghost-agent-docker
+git clone https://github.com/ghostsecurity/ghost-agent-docker.git /opt/exo
+cd /opt/exo
 ```
+
+> **The deploy directory must be `/opt/exo`.** In-stack upgrades run
+> `docker compose` from inside the updater container with the project
+> directory fixed at `/opt/exo`, so the compose file's relative bind
+> mounts (`./config.toml`, `./Caddyfile`, …) resolve to `/opt/exo/...`
+> on the host. Deploying anywhere else works for the first
+> `docker compose up` but breaks the first in-stack upgrade (the
+> recreated services would bind nonexistent host paths). `setup.sh`
+> refuses to run outside `/opt/exo`.
 
 Then follow the **Install** section below: `docker login`, then
 `./setup.sh`, then `docker compose pull && up -d`.
@@ -52,9 +61,12 @@ Then follow the **Install** section below: `docker login`, then
 
 ### 1. Clone this repo on the host
 
+Clone into `/opt/exo` — the deploy directory is required to be there
+(see the note under Quick start; `setup.sh` enforces it).
+
 ```bash
-git clone https://github.com/ghostsecurity/ghost-agent-docker.git
-cd ghost-agent-docker
+git clone https://github.com/ghostsecurity/ghost-agent-docker.git /opt/exo
+cd /opt/exo
 ```
 
 ### 2. Authenticate to Docker Hub
@@ -85,13 +97,19 @@ It prompts for the per-deployment inputs (release tag, public
 domain - auto-detected as `nip.io`, admin email + password, Docker
 Hub OAT, TLS flavor), auto-generates `ENCRYPTION_KEY` and
 `jwt_secret`, and writes `.env`, `config.toml`, `config.proxy.toml`,
-and `Caddyfile` from their `.example` templates. Refuses to
-overwrite existing files - delete them and re-run to regenerate.
+and `Caddyfile` from their `.example` templates. It then fetches
+`docker-compose.yml` for the chosen release tag from the published
+`exo-stack` bundle (the compose is not shipped in this repo - it's
+versioned with each release and fetched here, and re-fetched by the
+in-stack updater on every upgrade). Refuses to overwrite existing
+config files - delete them and re-run to regenerate.
 
 Or, to edit by hand: copy each `*.example` to its target name,
 open the four files, replace every empty REQUIRED value and `TODO`
 comment. Inline comments document each one. For BYO-cert, also
 `mkdir -p certs/` and place `fullchain.pem` + `privkey.pem` there.
+Then fetch the compose for your tag with `oras`:
+`oras pull docker.io/ghostsecurityhq/exo-stack:<TAG> -o .`.
 
 ### 4. Pull and start
 
@@ -120,7 +138,12 @@ admin credentials from step 3 and rotate the password from the UI.
 The in-stack updater polls Docker Hub every 10 minutes for new
 release tags. When a newer `vX.Y.Z` is available, the "Upgrade"
 button in the UI's System view lights up. Click it to upgrade the
-running stack in place.
+running stack in place. Each upgrade fetches that release's
+`exo-stack` bundle (its `docker-compose.yml`) and converges the
+stack to it, so a release can add, remove, or reconfigure containers
+- not just bump image tags. Your local `docker-compose.yml` is
+overwritten by the release's on each upgrade (edit topology upstream,
+not in place).
 
 To upgrade out of band (or to bump the updater image itself, which
 the in-UI upgrade deliberately doesn't touch):
@@ -138,7 +161,7 @@ docker compose up -d
 | Scale worker replicas | `WORKER_REPLICAS` in `.env`, then `docker compose up -d worker` |
 | Bump the updater image only | `UPDATER_TAG` in `.env`, then `docker compose up -d exo-updater` |
 | Run behind an existing reverse proxy | Keep Caddy in the stack (it serves the static UI bundle as well as proxying the API). Switch its Caddyfile to plain HTTP on a different host port, then point your external proxy at that port |
-| Use named volumes on a specific disk | Override the volume definitions at the bottom of `docker-compose.yml` with `driver_opts` pointing at the desired filesystem |
+| Use named volumes on a specific disk | The `docker-compose.yml` is fetched from the release bundle and overwritten on every upgrade, so don't edit it in place. Configure the Docker volume's storage out of band (e.g. a `local` volume `driver_opts` device, or relocating `/var/lib/docker`) |
 | Switch the registry | `REGISTRY` in `.env` (must mirror the `ghostsecurityhq/exo-*` layout) |
 | Cap container log size + auto-prune old images | Optional final step in `setup.sh`. Caps each container's logs at 10MB x 3 rotation (`json-file` driver), installs a daily systemd timer running `docker image prune -a --filter until=168h`. Answer 'n' at the prompt to skip |
 

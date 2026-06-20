@@ -25,6 +25,20 @@ fi
 
 # --- preflight ---
 
+# The deploy directory is locked to /opt/exo. In-stack upgrades run
+# `docker compose` from inside the updater container with the project
+# directory fixed at /opt/exo, so the compose file's relative bind
+# mounts (./config.toml, ./Caddyfile, …) resolve to /opt/exo/... on the
+# host. Deploying elsewhere works for the first `docker compose up` but
+# breaks the first upgrade (recreated services would bind nonexistent
+# host paths). Fail fast here rather than at upgrade time.
+if [ "$PWD" != "/opt/exo" ]; then
+  echo "${R}error:${N} this stack must be deployed at /opt/exo (current: ${PWD})."
+  echo "  Move the repo to /opt/exo and re-run, e.g.:"
+  echo "    sudo mv \"$PWD\" /opt/exo && cd /opt/exo && ./setup.sh"
+  exit 1
+fi
+
 # Required template files (sources for the runtime configs).
 for f in .env.example config.toml.example config.proxy.toml.example \
          Caddyfile.letsencrypt.example Caddyfile.byo.example; do
@@ -170,6 +184,30 @@ chmod 600 .env   # holds secrets: encryption key, jwt secret, admin pw, OAT
 # credential-proxy (UID 65532); keep them world-readable so the containers
 # can read them regardless of the operator's umask.
 chmod 644 config.toml config.proxy.toml
+
+# --- fetch the stack compose ---
+
+# The docker-compose.yml is NOT shipped in this repo. It's published per
+# release as the OCI "stack bundle" `${REGISTRY}/exo-stack:${TAG}` and
+# fetched here for bootstrap; the in-stack updater fetches subsequent
+# versions on each topology-aware upgrade (same source of truth). We pull
+# it with a throwaway `oras` container (no host oras install needed),
+# authenticating with the OAT already collected above.
+REGISTRY_VALUE="${REGISTRY:-docker.io/ghostsecurityhq}"
+DH_ORG="${REGISTRY_VALUE##*/}"
+STACK_REF="${REGISTRY_VALUE}/exo-stack:${TAG}"
+ORAS_IMAGE="ghcr.io/oras-project/oras:v1.2.0"
+
+echo
+echo "${B}Fetching stack compose${N} ${STACK_REF}"
+if docker run --rm -v "$PWD:/work" -w /work "$ORAS_IMAGE" \
+  pull --username "$DH_ORG" --password "$DOCKER_OAT" "$STACK_REF" -o . ; then
+  echo "  wrote docker-compose.yml"
+else
+  echo "${R}error:${N} failed to fetch the stack bundle ${STACK_REF}."
+  echo "  Confirm the tag exists in Docker Hub and the OAT has read access, then re-run."
+  exit 1
+fi
 
 # --- summary ---
 
