@@ -93,7 +93,11 @@ stack_registry = "docker.io/ghostsecurityhq"
 [updater.oci]
 registry = "registry-1.docker.io"
 namespace = "ghostsecurityhq"
-repository = "exo-worker"
+# Repo the poller watches for new release tags. Points at exo-stack — the
+# compose bundle, published LAST in the release pipeline (after every
+# image). Its tag appearing is what makes a release fully upgradeable: all
+# images plus the bundle are then in the registry.
+repository = "exo-stack"
 auth_username = "ghostsecurityhq"
 # auth_token is read from the EXO_UPDATER_OCI_AUTH_TOKEN env var.
 
