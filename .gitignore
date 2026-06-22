@@ -9,6 +9,9 @@ Caddyfile
 # Bring-your-own TLS material.
 certs/
 
+# Backup archives written by backup.sh (contain .env secrets + volume data).
+backups/
+
 # Editor / OS noise.
 .DS_Store
 *.swp

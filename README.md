@@ -174,6 +174,46 @@ docker compose logs -f --tail=100 exo-updater
 docker compose logs -f --tail=100 worker
 ```
 
+## Backup and restore
+
+`backup.sh` takes an **online, zero-downtime** backup of everything
+needed to rebuild the deployment - no stop, no write-blocking:
+
+- MongoDB via `mongodump --oplog` (a consistent point-in-time online dump)
+- the other named volumes (TLS CA private keys, runner identities, Caddy
+  certs, artifacts) via a read-only live tar
+- the runtime config (`.env`, `config.toml`, `config.proxy.toml`,
+  `Caddyfile`, `certs/`) and the resolved `docker-compose.yml`
+
+```bash
+cd /opt/exo
+./backup.sh                 # -> ./backups/<timestamp>
+./backup.sh --out=/mnt/bkp  # write under a different directory
+```
+
+The stack keeps serving throughout. The archive includes `.env`, which
+holds `ENCRYPTION_KEY` and `EXO_JWT_SECRET` - those are what make a
+restore usable: without `ENCRYPTION_KEY` every stored credential is
+undecryptable, and without `EXO_JWT_SECRET` all sessions are
+invalidated. Because it contains secrets, **store the backup securely
+and off the host**.
+
+`restore.sh` rebuilds from a backup - for rolling an instance back, or
+for moving to a fresh host. It is destructive: it replaces the current
+volumes and config with the backup's, brings the database up on a fresh
+volume, and replays the dump into it.
+
+```bash
+docker login -u ghostsecurityhq   # so images for the backed-up tag can be pulled
+cd /opt/exo
+./restore.sh ./backups/<timestamp>
+```
+
+On a fresh host, clone this repo to `/opt/exo` and run `restore.sh`
+directly - do **not** run `setup.sh` first (it would mint new secrets;
+the restore brings back the original `.env`). Verify with
+`docker compose ps` afterward.
+
 ## Tearing down
 
 ```bash
