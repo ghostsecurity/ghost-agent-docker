@@ -14,6 +14,14 @@
 # behind a corporate proxy), use Caddyfile.byo.example instead.
 
 {
+    # Disable the admin API (localhost:2019). This stack drives caddy
+    # entirely from this static Caddyfile and never uses the runtime
+    # admin API, so turning it off removes a full-reconfiguration
+    # endpoint from the container's attack surface. Reloads still work
+    # via `docker compose restart caddy` (a container restart re-reads
+    # the Caddyfile); only the in-place `caddy reload` is unavailable.
+    admin off
+
     # Contact address Let's Encrypt sends expiry warnings to if a
     # renewal fails within ~3 weeks of expiry.
     # TODO: replace with a monitored mailbox.

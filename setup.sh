@@ -77,6 +77,26 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 1
 fi
 
+# Compose MAJOR version must match the in-stack updater's compose. The
+# updater reconciles the stack's networks on every upgrade and per-run
+# worker recycle; compose stamps a per-network "config hash" that differs
+# across major versions, so if the host compose that first creates the
+# networks is a different major than the updater's, the updater's `up`
+# tries to recreate networks that still have containers attached and
+# fails ("network ... has active endpoints"). Keep REQUIRED_COMPOSE_MAJOR
+# in lockstep with COMPOSE_VERSION in build/updater.Dockerfile.
+REQUIRED_COMPOSE_MAJOR=5
+HOST_COMPOSE_VER=$(docker compose version --short 2>/dev/null | sed 's/^v//')
+HOST_COMPOSE_MAJOR=${HOST_COMPOSE_VER%%.*}
+if [ -n "$HOST_COMPOSE_MAJOR" ] && [ "$HOST_COMPOSE_MAJOR" != "$REQUIRED_COMPOSE_MAJOR" ]; then
+  echo "${R}error:${N} Docker Compose v${REQUIRED_COMPOSE_MAJOR}.x is required (found v${HOST_COMPOSE_VER:-unknown})."
+  echo "  The in-stack updater runs Compose v${REQUIRED_COMPOSE_MAJOR}.x and reconciles the stack's"
+  echo "  networks on upgrades; a different major makes it try to recreate networks"
+  echo "  that have active endpoints, which fails. Update the compose plugin:"
+  echo "    https://docs.docker.com/compose/install/"
+  exit 1
+fi
+
 # --- prompts ---
 
 echo "${B}Ghost Agent Platform - setup${N}"

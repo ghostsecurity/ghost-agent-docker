@@ -14,6 +14,16 @@
 #   3. Renewal is the operator's responsibility - swap the files in
 #      place and `docker compose restart caddy` to pick them up.
 
+{
+    # Disable the admin API (localhost:2019). This stack drives caddy
+    # entirely from this static Caddyfile and never uses the runtime
+    # admin API, so turning it off removes a full-reconfiguration
+    # endpoint from the container's attack surface. Reloads still work
+    # via `docker compose restart caddy` (a container restart re-reads
+    # the Caddyfile); only the in-place `caddy reload` is unavailable.
+    admin off
+}
+
 # TODO: replace example.com with the public hostname the cert was
 # issued for. Must match `ui_origin` and `callback_base_url` in
 # config.toml.
