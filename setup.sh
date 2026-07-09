@@ -73,7 +73,9 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 if ! docker compose version >/dev/null 2>&1; then
-  echo "${R}error:${N} 'docker compose' (v2 plugin) not found. Install docker-compose-plugin (or docker-compose-v2)."
+  echo "${R}error:${N} 'docker compose' plugin not found. Install the pinned v5.x plugin"
+  echo "  binary per the bootstrap steps in README.md (distro packages such as"
+  echo "  docker-compose-v2 ship a different major and won't pass the check below)."
   exit 1
 fi
 
@@ -92,8 +94,8 @@ if [ -n "$HOST_COMPOSE_MAJOR" ] && [ "$HOST_COMPOSE_MAJOR" != "$REQUIRED_COMPOSE
   echo "${R}error:${N} Docker Compose v${REQUIRED_COMPOSE_MAJOR}.x is required (found v${HOST_COMPOSE_VER:-unknown})."
   echo "  The in-stack updater runs Compose v${REQUIRED_COMPOSE_MAJOR}.x and reconciles the stack's"
   echo "  networks on upgrades; a different major makes it try to recreate networks"
-  echo "  that have active endpoints, which fails. Update the compose plugin:"
-  echo "    https://docs.docker.com/compose/install/"
+  echo "  that have active endpoints, which fails. Install the pinned v${REQUIRED_COMPOSE_MAJOR}.x plugin"
+  echo "  binary per the bootstrap steps in README.md."
   exit 1
 fi
 
@@ -103,7 +105,7 @@ echo "${B}Ghost Agent Platform - setup${N}"
 echo
 
 # Release tag
-read -r -p "Release tag to deploy (e.g. v0.0.27): " TAG
+read -r -p "Release tag to deploy (e.g. v0.0.45): " TAG
 [ -z "$TAG" ] && { echo "${R}error:${N} TAG is required"; exit 1; }
 
 # Public domain - detect IP and offer nip.io as the default
