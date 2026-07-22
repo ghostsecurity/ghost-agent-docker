@@ -1,15 +1,14 @@
 #!/usr/bin/env bash
-# setup.sh - interactive configuration for the Ghost Agent Platform.
+# setup.sh - host bootstrap for the Ghost Agent Platform.
 #
-# Prompts for the per-deployment inputs (release tag, public domain,
-# admin email + password, Docker Hub OAT, TLS flavor), auto-generates
-# the secrets that don't need operator choice (ENCRYPTION_KEY,
-# jwt_secret), and stamps out the runtime config files from the
-# `.example` templates:
+# Prompts for the release tag and Docker Hub OAT, generates the
+# one-time claim token, fetches the stack bundle (compose file +
+# static config defaults), and copies the defaults into place. All
+# platform configuration - domain, TLS, admin account, connectors -
+# happens afterwards in the in-product setup wizard, unlocked by the
+# claim token this script prints.
 #
-#   .env, config.toml, config.proxy.toml, Caddyfile
-#
-# Refuses to overwrite any of those files. Remove them manually and
+# Refuses to overwrite existing config files. Remove them manually and
 # re-run to regenerate.
 
 set -euo pipefail
@@ -39,15 +38,6 @@ if [ "$PWD" != "/opt/exo" ]; then
   exit 1
 fi
 
-# Required template files (sources for the runtime configs).
-for f in .env.example config.toml.example config.proxy.toml.example \
-         Caddyfile.letsencrypt.example Caddyfile.byo.example; do
-  if [ ! -f "$f" ]; then
-    echo "${R}error:${N} required template $f not found - run setup.sh from a ghost-agent-docker checkout"
-    exit 1
-  fi
-done
-
 # Don't overwrite an existing config.
 for f in .env config.toml config.proxy.toml Caddyfile; do
   if [ -f "$f" ]; then
@@ -56,7 +46,7 @@ for f in .env config.toml config.proxy.toml Caddyfile; do
   fi
 done
 
-for tool in openssl sed curl; do
+for tool in openssl curl; do
   command -v "$tool" >/dev/null 2>&1 || { echo "${R}error:${N} '$tool' not found in PATH"; exit 1; }
 done
 
@@ -104,116 +94,86 @@ fi
 echo "${B}Ghost Agent Platform - setup${N}"
 echo
 
-# Release tag
-read -r -p "Release tag to deploy (e.g. v0.0.45): " TAG
-[ -z "$TAG" ] && { echo "${R}error:${N} TAG is required"; exit 1; }
-
-# Public domain - detect IP and offer nip.io as the default
-DETECTED_IP=$(curl -4 -fsS --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)
-
-if [ -n "$DETECTED_IP" ]; then
-  SUGGESTED="${DETECTED_IP//./-}.nip.io"
-  echo
-  echo "Detected public IP: ${B}${DETECTED_IP}${N}"
-  read -r -p "Public domain [${SUGGESTED}]: " DOMAIN
-  DOMAIN="${DOMAIN:-$SUGGESTED}"
-else
-  echo
-  read -r -p "Public domain (e.g. 203-0-113-45.nip.io): " DOMAIN
-  [ -z "$DOMAIN" ] && { echo "${R}error:${N} DOMAIN is required"; exit 1; }
-fi
-
-# Admin email - used for LE registration and the seed admin user
-echo
-read -r -p "Admin email (Let's Encrypt + initial login): " ADMIN_EMAIL
-[ -z "$ADMIN_EMAIL" ] && { echo "${R}error:${N} ADMIN_EMAIL is required"; exit 1; }
-
-# Admin password - auto-generate if blank, hex for sed-safety
-echo
-read -r -s -p "Admin password (blank = auto-generate): " ADMIN_PASSWORD
-echo
-AUTO_PW=0
-if [ -z "$ADMIN_PASSWORD" ]; then
-  ADMIN_PASSWORD=$(openssl rand -hex 16)
-  AUTO_PW=1
-fi
-
-# Docker Hub OAT
-echo
+# Docker Hub OAT (collected first so the newest release tag can be
+# resolved from the registry before the tag prompt).
 read -r -s -p "Docker Hub OAT (will be hidden): " DOCKER_OAT
 echo
 [ -z "$DOCKER_OAT" ] && { echo "${R}error:${N} OAT is required"; exit 1; }
 
-# TLS flavor
+# Resolve the newest published release tag from the registry - the same
+# semantics as the in-stack updater's poller and the AWS bootstrap.
+# exo-stack is published LAST in the release pipeline (after every
+# image), so its newest clean-semver tag is a fully published release.
+# Best-effort: a lookup failure just leaves the prompt without a default.
+REGISTRY_VALUE="${REGISTRY:-docker.io/ghostsecurityhq}"
+DH_ORG="${REGISTRY_VALUE##*/}"
+ORAS_IMAGE="ghcr.io/oras-project/oras:v1.2.0"
+
 echo
-echo "TLS flavor:"
-echo "  1) Let's Encrypt (auto - needs public DNS + ports 80/443 open)"
-echo "  2) Bring-your-own cert"
-read -r -p "Pick [1]: " TLS_CHOICE
-TLS_CHOICE="${TLS_CHOICE:-1}"
+echo "Resolving newest release..."
+LATEST_TAG=$(docker run --rm "$ORAS_IMAGE" \
+  repo tags --username "$DH_ORG" --password "$DOCKER_OAT" \
+  "${REGISTRY_VALUE}/exo-stack" 2>/dev/null \
+  | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+  | sort -V | tail -1 || true)
+
+# Release tag - defaults to the resolved latest; the operator can pin a
+# specific version by typing it.
+if [ -n "$LATEST_TAG" ]; then
+  read -r -p "Release tag to deploy [${LATEST_TAG}]: " TAG
+  TAG="${TAG:-$LATEST_TAG}"
+else
+  echo "${Y}note:${N} could not resolve the latest tag automatically."
+  read -r -p "Release tag to deploy (e.g. v0.0.45): " TAG
+fi
+[ -z "$TAG" ] && { echo "${R}error:${N} TAG is required"; exit 1; }
 
 # --- generate ---
 
-ENCRYPTION_KEY=$(openssl rand -base64 32)
-JWT_SECRET=$(openssl rand -base64 64 | tr -d '\n')
+# The one secret this script delivers: the claim token that unlocks the
+# in-product setup wizard. The platform stores only its hash; the raw
+# value is printed once below.
+CLAIM_TOKEN=$(openssl rand -hex 32)
 
-# .env: substitute the three REQUIRED values into their empty
-# placeholders in .env.example. Preserves comments and the optional
-# Slack / REGISTRY / UPDATER_TAG lines for later manual editing.
-sed \
-  -e "s|^TAG=$|TAG=${TAG}|" \
-  -e "s|^ENCRYPTION_KEY=$|ENCRYPTION_KEY=${ENCRYPTION_KEY}|" \
-  -e "s|^EXO_JWT_SECRET=$|EXO_JWT_SECRET=${JWT_SECRET}|" \
-  -e "s|^EXO_SEED_ADMIN_PASSWORD=$|EXO_SEED_ADMIN_PASSWORD=${ADMIN_PASSWORD}|" \
-  -e "s|^EXO_UPDATER_OCI_AUTH_TOKEN=$|EXO_UPDATER_OCI_AUTH_TOKEN=${DOCKER_OAT}|" \
-  .env.example > .env
+# Detect the public IP: its nip.io name becomes the bring-up hostname
+# the pre-setup Caddyfile serves with a real Let's Encrypt cert, so the
+# wizard loads without a certificate warning. Detection failure is
+# non-fatal - the catch-all self-signed fallback still serves the
+# wizard on the bare IP (one browser warning to accept).
+DETECTED_IP=$(curl -4 -fsS --max-time 5 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)
+BRINGUP_DOMAIN=""
+if [ -n "$DETECTED_IP" ]; then
+  BRINGUP_DOMAIN="${DETECTED_IP//./-}.nip.io"
+fi
 
-# config.toml: substitute domain (URL form only) + seed admin email.
-# jwt_secret and the admin password are NOT written here — they go into
-# .env (above) as EXO_JWT_SECRET / EXO_SEED_ADMIN_PASSWORD so config.toml
-# carries no secrets and can be world-readable for the non-root gateway.
-# The TODO comments in the example file are left intact - harmless
-# reference for anyone editing later.
-sed \
-  -e "s|https://example.com|https://${DOMAIN}|g" \
-  -e "s|email = \"admin@example.com\"|email = \"${ADMIN_EMAIL}\"|" \
-  config.toml.example > config.toml
+# Minimal .env: image selection, registry auth, the claim token, and
+# the bring-up hostname. Everything else (domain, TLS, connectors,
+# worker count) is configured through the setup wizard and rendered
+# into this file by the platform.
+cat > .env <<EOF
+# Ghost Agent Platform - runtime environment.
+#
+# Written by setup.sh; the platform rewrites managed lines in this file
+# when instance settings change. Lines you add for the optional
+# overrides documented in .env.example are preserved.
+TAG=${TAG}
+EXO_UPDATER_OCI_AUTH_TOKEN=${DOCKER_OAT}
+EXO_CLAIM_TOKEN=${CLAIM_TOKEN}
+EOF
+if [ -n "$BRINGUP_DOMAIN" ]; then
+  printf 'EXO_BRINGUP_DOMAIN=%s\n' "$BRINGUP_DOMAIN" >> .env
+fi
+chmod 600 .env   # holds secrets: the OAT and the claim token
 
-# config.proxy.toml: no operator inputs - just copy.
-cp config.proxy.toml.example config.proxy.toml
-
-# Caddyfile: pick the flavor and stamp the hostname + (LE) email.
-BYO_NOTICE=0
-case "$TLS_CHOICE" in
-  2)
-    sed \
-      -e "s|^example.com {|${DOMAIN} {|" \
-      Caddyfile.byo.example > Caddyfile
-    mkdir -p certs
-    BYO_NOTICE=1
-    ;;
-  *)
-    sed \
-      -e "s|admin@example.com|${ADMIN_EMAIL}|" \
-      -e "s|^example.com {|${DOMAIN} {|" \
-      Caddyfile.letsencrypt.example > Caddyfile
-    ;;
-esac
-
-chmod 600 .env   # holds secrets: encryption key, jwt secret, admin pw, OAT
-# config.toml and config.proxy.toml carry no secrets (the gateway's come
-# from .env) and are bind-mounted read-only into the non-root gateway /
-# credential-proxy (UID 65532); keep them world-readable so the containers
-# can read them regardless of the operator's umask.
-chmod 644 config.toml config.proxy.toml
-
-# --- fetch the stack compose ---
+# --- fetch the stack bundle ---
 
 # The docker-compose.yml is NOT shipped in this repo. It's published per
-# release as the OCI "stack bundle" `${REGISTRY}/exo-stack:${TAG}` and
-# fetched here for bootstrap; the in-stack updater fetches subsequent
-# versions on each topology-aware upgrade (same source of truth). We pull
-# it with a throwaway `oras` container (no host oras install needed),
+# release as the OCI "stack bundle" `${REGISTRY}/exo-stack:${TAG}`,
+# together with the static config defaults (defaults/), the Caddyfile
+# templates the platform renders settings into (templates/), and host
+# helper scripts (scripts/). The in-stack updater fetches subsequent
+# versions on each topology-aware upgrade (same source of truth). We
+# pull with a throwaway `oras` container (no host oras install needed),
 # authenticating with the OAT already collected above.
 REGISTRY_VALUE="${REGISTRY:-docker.io/ghostsecurityhq}"
 DH_ORG="${REGISTRY_VALUE##*/}"
@@ -221,31 +181,76 @@ STACK_REF="${REGISTRY_VALUE}/exo-stack:${TAG}"
 ORAS_IMAGE="ghcr.io/oras-project/oras:v1.2.0"
 
 echo
-echo "${B}Fetching stack compose${N} ${STACK_REF}"
+echo "${B}Fetching stack bundle${N} ${STACK_REF}"
 if docker run --rm -v "$PWD:/work" -w /work "$ORAS_IMAGE" \
   pull --username "$DH_ORG" --password "$DOCKER_OAT" "$STACK_REF" -o . ; then
-  echo "  wrote docker-compose.yml"
+  echo "  wrote docker-compose.yml + defaults/ + templates/ + scripts/"
 else
   echo "${R}error:${N} failed to fetch the stack bundle ${STACK_REF}."
   echo "  Confirm the tag exists in Docker Hub and the OAT has read access, then re-run."
   exit 1
 fi
 
+for f in defaults/config.toml defaults/config.proxy.toml defaults/Caddyfile.bootstrap; do
+  if [ ! -f "$f" ]; then
+    echo "${R}error:${N} bundle is missing $f - the release predates the setup wizard."
+    echo "  Deploy a newer release tag."
+    exit 1
+  fi
+done
+
+# --- place the config defaults ---
+
+# Copy-if-absent only: neither this script nor an upgrade ever
+# overwrites the live copies. The platform (updater) rewrites the
+# Caddyfile and managed .env lines when instance settings change.
+cp -n defaults/config.toml config.toml
+cp -n defaults/config.proxy.toml config.proxy.toml
+cp -n defaults/Caddyfile.bootstrap Caddyfile
+# BYO-cert drop point; bind-mounted into the edge proxy. The platform
+# writes operator-uploaded certs here when custom TLS is selected.
+mkdir -p certs
+
+# config.toml and config.proxy.toml carry no secrets and are
+# bind-mounted read-only into the non-root gateway / credential-proxy
+# (UID 65532); keep them world-readable so the containers can read them
+# regardless of the operator's umask.
+chmod 644 config.toml config.proxy.toml Caddyfile
+
+# --- claim-token reissue helper ---
+
+# Installs the on-host helper that rotates the claim token for an
+# unclaimed instance (lost/exposed token before the wizard ran).
+if [ -f scripts/reissue-claim-token.sh ]; then
+  if [ "$(id -u)" -eq 0 ]; then
+    install -m 755 scripts/reissue-claim-token.sh /usr/local/bin/exo-reissue-claim-token
+    echo "  installed /usr/local/bin/exo-reissue-claim-token"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo install -m 755 scripts/reissue-claim-token.sh /usr/local/bin/exo-reissue-claim-token
+    echo "  installed /usr/local/bin/exo-reissue-claim-token"
+  else
+    echo "${Y}note:${N} could not install the reissue helper (no root/sudo);"
+    echo "  run scripts/reissue-claim-token.sh directly if the claim token is lost."
+  fi
+fi
+
 # --- summary ---
+
+if [ -n "$BRINGUP_DOMAIN" ]; then
+  WIZARD_URL="https://${BRINGUP_DOMAIN}"
+else
+  WIZARD_URL="https://<this-host's-public-IP>"
+fi
 
 echo
 echo "${G}done${N} - configuration written to .env, config.toml, config.proxy.toml, Caddyfile"
 echo
-echo "Domain:   https://${DOMAIN}"
-echo "Admin:    ${ADMIN_EMAIL}"
-if [ "$AUTO_PW" = "1" ]; then
-  echo "${Y}Admin password (auto-generated): ${ADMIN_PASSWORD}${N}"
-  echo "${Y}Save this somewhere safe - it won't be shown again.${N}"
-fi
-if [ "$BYO_NOTICE" = "1" ]; then
-  echo
-  echo "${Y}BYO-cert: place fullchain.pem and privkey.pem in ./certs/ before starting.${N}"
-fi
+echo "${Y}Claim token (needed once, in the setup wizard):${N}"
+echo
+echo "  ${B}${CLAIM_TOKEN}${N}"
+echo
+echo "${Y}Save it until setup completes - it won't be shown again.${N}"
+echo "(Lost it before claiming? Run exo-reissue-claim-token to rotate.)"
 
 # --- host tuning (optional) ---
 
@@ -340,3 +345,11 @@ echo "Next:"
 echo "  docker login -u ghostsecurityhq    # if you haven't already"
 echo "  docker compose pull"
 echo "  docker compose up -d"
+echo
+echo "Then open ${B}${WIZARD_URL}${N} to run the setup wizard and enter the"
+echo "claim token above. The wizard creates the admin account and"
+echo "configures the domain and TLS."
+if [ -z "$BRINGUP_DOMAIN" ]; then
+  echo "(Browsing by bare IP serves a temporary self-signed certificate -"
+  echo "accept the one-time warning.)"
+fi
