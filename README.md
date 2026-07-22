@@ -87,30 +87,30 @@ and any manual pulls you run from the shell later. The in-stack updater
 authenticates itself separately at container start using the OAT in
 `.env`.
 
-### 4. Create the runtime config
+### 4. Bootstrap the host
 
 Run the interactive script:
 
 ```bash
+cd /opt/exo
 ./setup.sh
 ```
 
-It prompts for the per-deployment inputs (release tag, public domain -
-auto-detected as `nip.io`, admin email + password, Docker Hub OAT, TLS
-flavor), auto-generates `ENCRYPTION_KEY` and `jwt_secret`, and writes
-`.env`, `config.toml`, `config.proxy.toml`, and `Caddyfile` from their
-`.example` templates. It also fetches the `docker-compose.yml` for the
-chosen release tag (the compose file is versioned with each release,
-not shipped in this repo). It refuses to overwrite existing config
-files - delete them and re-run to regenerate.
+It prompts for the Docker Hub OAT, then resolves the newest published
+release and offers it as the default tag (type a specific `vX.Y.Z` to
+pin instead). It generates the one-time **claim token** (printed at the
+end - save it), fetches the release's stack bundle (`docker-compose.yml`
+plus the static config defaults), and copies the defaults into place.
+It refuses to overwrite existing config files - delete them and re-run
+to regenerate.
+
+Everything else - the admin account, public domain, TLS - is
+configured afterwards in the in-product setup wizard. There are no
+secrets to generate or config files to edit by hand: the platform
+self-generates its internal secrets on first boot and rewrites the
+managed parts of `.env` and the `Caddyfile` when settings change.
 
 ![setup.sh prompts](docs/setup-screenshot.png)
-
-Or, to configure by hand: copy each `*.example` to its target name and
-replace every empty REQUIRED value and `TODO` comment (inline comments
-document each one). For BYO-cert, also `mkdir -p certs/` and place
-`fullchain.pem` + `privkey.pem` there. Then fetch the compose file for
-your tag: `oras pull docker.io/ghostsecurityhq/exo-stack:<TAG> -o .`.
 
 ### 5. Pull and start
 
@@ -120,30 +120,46 @@ docker compose up -d
 ```
 
 The first `up` takes a minute or two: MongoDB initializes its replica
-set, the credential proxy generates its CA, the UI bundle is copied
-into the shared volume, and Caddy provisions a cert (LE flavor only).
+set, the credential proxy generates its CA and encryption key, and the
+UI bundle is copied into the shared volume. The edge proxy serves the
+`nip.io` bring-up hostname with a real Let's Encrypt certificate;
+bare-IP access falls back to a temporary self-signed certificate.
 
-### 6. Verify
+### 6. Run the setup wizard
+
+Open the `nip.io` URL setup.sh printed in a browser (no certificate
+warning; browsing by bare IP instead shows a one-time self-signed
+warning). Enter the claim token, create the admin account, and set the domain
+and TLS mode (Let's Encrypt or a custom certificate upload). The stack
+applies the configuration - the affected services restart briefly -
+and the instance comes up at the configured domain with a real
+certificate.
+
+Lost the claim token before claiming? Rotate it from the host:
 
 ```bash
-docker compose ps
+exo-reissue-claim-token
 ```
 
-All services should be `running` (with `database` showing healthy).
-Open `https://<your-domain>` in a browser, log in with the seed admin
-credentials from step 4, and rotate the password from the UI.
+The token is single-use: once setup completes it is inert, and the
+claim endpoints are permanently disabled.
+
+Domain, TLS, worker count, and connector tokens can all be changed
+later under System → Settings.
 
 ## Upgrade
 
 The in-stack updater polls Docker Hub every 10 minutes for new release
 tags. When a newer `vX.Y.Z` is available, the "Upgrade" button in the
 UI's System view lights up; click it to upgrade the running stack in
-place. A release can add, remove, or reconfigure containers - not just
-bump image tags - and each upgrade overwrites the local
-`docker-compose.yml` with the release's, so don't edit it in place.
+place - including the updater's own image, which is recreated by a
+detached helper at the tail of the upgrade and rolled back
+automatically if the new container doesn't come healthy. A release can
+add, remove, or reconfigure containers - not just bump image tags -
+and each upgrade overwrites the local `docker-compose.yml` with the
+release's, so don't edit it in place.
 
-To upgrade out of band (or to bump the updater image itself, which the
-in-UI upgrade deliberately doesn't touch):
+To upgrade out of band:
 
 ```bash
 sed -i 's/^TAG=.*/TAG=vX.Y.Z/' .env
@@ -177,11 +193,13 @@ cd /opt/exo
 ./backup.sh --out=/mnt/bkp  # write under a different directory
 ```
 
-The stack keeps serving throughout. The archive includes `.env`, whose
-`ENCRYPTION_KEY` and `EXO_JWT_SECRET` are what make a restore usable
-(stored credentials and sessions are unrecoverable without them).
-Because it contains secrets, **store the backup securely and off the
-host**.
+The stack keeps serving throughout. The archive includes `.env` and
+the `tls` volume, which together carry the credential-wrapping key and
+session-signing secret (`encryption.key` / `jwt.secret` on the volume
+for platform-generated secrets, or `.env` values where the operator
+supplied them). Those are what make a restore usable - stored
+credentials and sessions are unrecoverable without them. Because it
+contains secrets, **store the backup securely and off the host**.
 
 `restore.sh` rebuilds from a backup - for rolling an instance back, or
 for moving to a fresh host. It is destructive: it replaces the current
@@ -203,7 +221,7 @@ the restore brings back the original `.env`). Verify with
 
 | Goal | Where |
 | --- | --- |
-| Scale worker replicas | `WORKER_REPLICAS` in `.env`, then `docker compose up -d worker` |
+| Change domain / TLS / worker count / Slack tokens | System → Settings in the UI |
 | Bump the updater image only | `UPDATER_TAG` in `.env`, then `docker compose up -d exo-updater` |
 | Run behind an existing reverse proxy | Switch the Caddyfile to plain HTTP on another host port (see below) |
 | Use named volumes on a specific disk | Configure Docker volume storage out of band (see below) |
