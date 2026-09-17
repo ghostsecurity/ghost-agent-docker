@@ -222,11 +222,50 @@ the restore brings back the original `.env`). Verify with
 | Goal | Where |
 | --- | --- |
 | Change domain / TLS / worker count / Slack tokens | System → Settings in the UI |
+| Run a second worker pool on its own image (a slimmer base, extra tools) | System → Instance settings → Workers in the UI (see below) |
+| Install a tool the shipped worker image lacks | System → Worker add-ons in the UI, then add it to a pool (see below) |
 | Bump the updater image only | `UPDATER_TAG` in `.env`, then `docker compose up -d exo-updater` |
 | Run behind an existing reverse proxy | Switch the Caddyfile to plain HTTP on another host port (see below) |
 | Use named volumes on a specific disk | Configure Docker volume storage out of band (see below) |
 | Switch the registry | `REGISTRY` in `.env` (must mirror the `ghostsecurityhq/exo-*` layout) |
-| Cap container log size + auto-prune old images | Optional final step in `setup.sh` (see below) |
+| Cap container log size, auto-prune old images, block pool image builds from cloud metadata | Optional final step in `setup.sh` (see below) |
+
+**Worker pools and add-ons**: besides the default worker fleet, up to
+three more pools can run on images the updater builds on this host:
+a published base (the full image or the slim one) plus add-ons from
+the release catalog and any custom add-ons you define. Nothing is
+pushed to a registry; the build runs on the host's Docker daemon, so it
+needs outbound access to Ubuntu's package archives and to wherever the
+add-ons download from (GitHub releases, npm). Builds keep one previous
+image per pool and cap their build cache, and refuse to start with less
+than 15 GB free on Docker's data root. The updater keeps its build
+files in `/opt/exo`: `worker-addons/` (the release catalog, replaced on
+every upgrade), `worker-images/pool-<n>/` (each pool's rendered
+Dockerfile and build log), `.worker-images.json`, and `.buildx/`. Leave
+them alone; `worker-images/pool-<n>/build.log` is the place to look
+when a build fails. Pool settings and add-on recipes live in the
+database and are covered by `backup.sh`.
+
+Because the build runs on the host daemon, each install step runs in a
+container on Docker's default bridge with the host's outbound network,
+not through the credential proxy. On a cloud VM that path also reaches
+the instance metadata service at `169.254.169.254`, and with it the
+VM's cloud identity. The host tuning step in `setup.sh` installs
+`exo-block-build-metadata.service`, which drops that traffic for the
+default bridge only (the stack's containers use compose networks and
+are unaffected) and re-applies the rule after every Docker restart. If
+you skipped host tuning, re-run `setup.sh` or add the rule to your own
+firewall management:
+
+```
+iptables -I DOCKER-USER -i docker0 -d 169.254.169.254 -j DROP
+ip6tables -I DOCKER-USER -i docker0 -d fd00:ec2::254 -j DROP
+```
+
+The second line matters only on an EC2 instance with IMDS over IPv6
+enabled and IPv6 turned on in Docker; other clouds serve metadata on
+the IPv4 address alone. On a server with no metadata service both rules
+are harmless.
 
 **Existing reverse proxy**: keep Caddy in the stack - it serves the
 static UI bundle as well as proxying the API. Switch its Caddyfile to
