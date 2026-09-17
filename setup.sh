@@ -258,6 +258,7 @@ echo
 echo "${B}Host tuning${N} (optional, modifies system files - needs root/sudo):"
 echo "  - Cap container log size at 10MB x 3 files (json-file driver)"
 echo "  - Daily prune of unused images older than 7 days"
+echo "  - Block worker pool image builds from the cloud metadata service"
 echo
 read -r -p "Apply? [Y/n]: " TUNE_CHOICE
 
@@ -336,6 +337,59 @@ EOF
       $SUDO systemctl daemon-reload
       $SUDO systemctl enable --now exo-docker-prune.timer >/dev/null 2>&1
       echo "  installed exo-docker-prune.timer (daily image prune)"
+
+      # Worker pool image builds run on this host's Docker daemon, so
+      # each install step runs in a container on the default bridge
+      # (docker0) with the host's outbound network. On a cloud VM that
+      # path reaches the instance metadata service, and with it the
+      # VM's cloud identity. Drop it for the default bridge only; the
+      # stack's own containers sit on compose networks and are not
+      # affected. Harmless on a host with no metadata service.
+      # Idempotent, and re-applied after every docker restart.
+      $SUDO tee /usr/local/sbin/exo-block-build-metadata > /dev/null <<'EOF'
+#!/bin/sh
+set -eu
+
+guard() { # <iptables binary> <metadata address> <required: yes|no>
+  bin=$1; addr=$2; required=$3
+  if ! command -v "$bin" >/dev/null 2>&1 || ! "$bin" -S DOCKER-USER >/dev/null 2>&1; then
+    [ "$required" = no ] && return 0
+    echo "exo-block-build-metadata: $bin has no DOCKER-USER chain; is docker running?" >&2
+    exit 1
+  fi
+  "$bin" -C DOCKER-USER -i docker0 -d "$addr" -j DROP 2>/dev/null \
+    || "$bin" -I DOCKER-USER 1 -i docker0 -d "$addr" -j DROP
+}
+
+guard iptables  169.254.169.254 yes
+guard ip6tables fd00:ec2::254   no
+EOF
+      $SUDO chmod 0755 /usr/local/sbin/exo-block-build-metadata
+
+      $SUDO tee /etc/systemd/system/exo-block-build-metadata.service > /dev/null <<'EOF'
+[Unit]
+Description=Block Docker's default bridge from the instance metadata service
+After=docker.service
+Requires=docker.service
+# Re-run whenever docker restarts, so the rule is never lost with the chain.
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/exo-block-build-metadata
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+      $SUDO systemctl daemon-reload
+      if $SUDO systemctl enable --now exo-block-build-metadata.service >/dev/null 2>&1; then
+        echo "  installed exo-block-build-metadata.service (metadata guard for pool image builds)"
+      else
+        echo "${Y}note:${N} could not install exo-block-build-metadata.service (is docker running with its"
+        echo "  iptables management on?); see 'Worker pools and add-ons' in the README for the rule."
+      fi
     fi
     ;;
 esac
